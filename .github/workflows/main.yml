@@ -1,0 +1,75 @@
+name: setup KDE Plasma + CRD
+
+on:
+  workflow_dispatch:
+    inputs:
+      crd_code:
+        description: 'Google Chrome Remote Desktop Authorization Code (Full --code="..." string from the headless setup page)'
+        required: true
+        type: string
+      crd_pin:
+        description: 'Google Chrome Remote Desktop PIN (6-digit number)'
+        required: true
+        type: string
+        # NOTE: If you store this in a separate GitHub Secret, use ${{ secrets.CRD_PIN }} instead of inputs.crd_pin
+
+permissions:
+  contents: read
+
+jobs:
+  setup-gui-runner:
+    runs-on: ubuntu-latest
+    env:
+      USERNAME: runner
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure runner user has sudo
+        run: |
+          echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
+
+      - name: Install KDE Plasma + Chrome Remote Desktop
+        run: |
+          echo ">>> Installing KDE Plasma Desktop & CRD..."
+          sudo apt-get update -qq
+          # Install KDE and required dependencies
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kde-plasma-desktop xorg dbus-x11 wget jq
+          
+          # 1. Download and install CRD
+          CRD_DEB="chrome-remote-desktop_current_amd64.deb"
+          wget https://dl.google.com/linux/direct/$CRD_DEB
+          # The || sudo apt install -f -y -qq handles dependency issues after dpkg
+          sudo dpkg --install $CRD_DEB || sudo apt install -f -y -qq
+          
+          # 2. Configure the session to use KDE Plasma
+          echo "exec /usr/bin/startplasma-x11" | sudo tee /etc/chrome-remote-desktop-session
+          
+          # 3. Add the runner user to the CRD group (FIXED)
+          # FIX: Explicitly ensure the group exists before adding the user
+          sudo groupadd -f chrome-remote-desktop
+          sudo usermod -aG chrome-remote-desktop ${USERNAME}
+
+      - name: Authorize and Start CRD Service
+        run: |
+          echo ">>> Starting Chrome Remote Desktop Service..."
+          
+          # Construct the final CRD command using the workflow inputs.
+          CRD_COMMAND="/opt/google/chrome-remote-desktop/chrome-remote-desktop --code=${{ inputs.crd_code }} --pin=${{ inputs.crd_pin }}"
+          
+          # Execute the command as the 'runner' user to start the headless service.
+          sudo -u ${USERNAME} sh -c "${CRD_COMMAND}"
+          
+          echo "CRD Service Started. The runner should now appear in your Chrome Remote Desktop dashboard."
+
+      - name: Keep Alive
+        run: |
+          echo "=== FINAL CONNECTION INFO ==="
+          echo "1. Go to: https://remotedesktop.google.com/access"
+          echo "2. Find the new desktop session linked to your Google Account."
+          echo "3. Connect using the PIN you provided."
+          echo
+          echo ">>> Keeping runner alive for connection (for up to the GitHub Actions job limit)."
+          # Loop to keep the action running
+          while true; do sleep 600; done
+          
