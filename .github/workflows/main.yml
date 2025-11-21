@@ -1,16 +1,7 @@
-name: setup CRD (XFCE - Faster Install)
+name: setup KDE Plasma + ngrok + VNC (for CRD Install)
 
 on:
   workflow_dispatch:
-    inputs:
-      crd_code:
-        description: 'RAW Chrome Remote Desktop Authorization Code (The string inside --code="..." from the headless setup page)'
-        required: true
-        type: string
-      crd_pin:
-        description: 'Google Chrome Remote Desktop PIN (6-digit number)'
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -19,58 +10,95 @@ jobs:
   setup-gui-runner:
     runs-on: ubuntu-latest
     env:
+      NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
       USERNAME: runner
+      # Note: VNC uses a separate password (vncpasswd) but we'll reuse the runner password for simplicity
+      PASSWORD: runner
+      VNC_PORT: 5901
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup User and Install XFCE + CRD
+      - name: Set Runner User Credentials
         run: |
-          echo ">>> Setting up user and installing XFCE + CRD..."
-          
-          # Set up user for sudo
+          # Set the password for the runner user
+          echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
           echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
 
-          # Update and install CRD dependencies + XFCE
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xfce4 xfce4-terminal dbus-x11 wget jq
-
-          # 1. Download and install CRD
-          CRD_DEB="chrome-remote-desktop_current_amd64.deb"
-          wget https://dl.google.com/linux/direct/$CRD_DEB
-          sudo dpkg --install $CRD_DEB || sudo apt install -f -y -qq
-          
-          # 2. Configure the session to use XFCE
-          echo "exec /usr/bin/xfce4-session" | sudo tee /etc/chrome-remote-desktop-session
-          
-          # 3. Add the runner user to the CRD group
-          sudo groupadd -f chrome-remote-desktop
-          sudo usermod -aG chrome-remote-desktop ${USERNAME}
-
-      - name: Authorize and Start CRD Service
+      - name: Install KDE Plasma + VNC Server
         run: |
-          echo ">>> Starting Chrome Remote Desktop Service..."
-          
-          # Manually construct the full command using the two separate inputs.
-          # The start-host command is more reliable than the chrome-remote-desktop client.
-          CRD_COMMAND="DISPLAY= /opt/google/chrome-remote-desktop/start-host \
-                       --code=\"${{ inputs.crd_code }}\" \
-                       --redirect-url=\"https://remotedesktop.google.com/_/oauthredirect\" \
-                       --name=$(hostname) \
-                       --pin=\"${{ inputs.crd_pin }}\""
-          
-          echo "Executing CRD command (code and pin redacted from log)..."
-          
-          # Execute the command as the 'runner' user.
-          sudo -u ${USERNAME} sh -c "${CRD_COMMAND}"
-          
-          echo "CRD Service Started."
+          echo ">>> Installing KDE Plasma Desktop & TightVNC Server..."
+          sudo apt-get update -qq
+          # Install KDE, xorg, and TightVNC
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kde-plasma-desktop xorg dbus-x11 tightvncserver wget jq
 
-      - name: Keep Alive
+          # 1. Configure VNC Startup Script for KDE Plasma
+          mkdir -p /home/${USERNAME}/.vnc
+          VNC_STARTUP_SCRIPT="/home/${USERNAME}/.vnc/xstartup"
+          
+          # Create the xstartup file to launch KDE
+          echo '#!/bin/bash' | sudo tee ${VNC_STARTUP_SCRIPT}
+          echo 'xrdb $HOME/.Xresources' | sudo tee -a ${VNC_STARTUP_SCRIPT}
+          echo 'startkde' | sudo tee -a ${VNC_STARTUP_SCRIPT}
+          
+          sudo chmod +x ${VNC_STARTUP_SCRIPT}
+          sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.vnc
+
+          # 2. Set the VNC password (required by VNC server)
+          # We execute vncpasswd as the runner user using their PASSWORD environment variable
+          # The 'yes' command automates the input process, setting the password and skipping verification
+          echo "Setting VNC password for ${USERNAME}..."
+          sudo -u ${USERNAME} sh -c "mkdir -p /home/${USERNAME}/.vnc && echo '${PASSWORD}' | vncpasswd -f > /home/${USERNAME}/.vnc/passwd"
+          sudo -u ${USERNAME} chmod 600 /home/${USERNAME}/.vnc/passwd
+          
+          # 3. Start VNC Server
+          echo "Starting VNC Server on port ${VNC_PORT}..."
+          sudo -u ${USERNAME} tightvncserver -geometry 1280x800 :1
+
+
+      - name: Setup ngrok tunnel
+        run: |
+          echo ">>> Setting up ngrok tunnel on VNC port ${VNC_PORT}..."
+          
+          # Install ngrok
+          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.zip -o ngrok.zip
+          unzip ngrok.zip
+          
+          # Authenticate ngrok (NGROK_AUTHTOKEN must be in secrets)
+          ./ngrok authtoken "${NGROK_AUTHTOKEN}"
+          
+          # Start ngrok tunnel in the background
+          ./ngrok tcp ${VNC_PORT} --log stdout --log-format json --region us &
+
+          # Wait for ngrok to get the URL
+          NGROK_API_URL="http://127.0.0.1:4040/api/tunnels"
+          for i in {1..10}; do
+            TUNNELS_JSON=$(curl -s $NGROK_API_URL)
+            if [ $? -eq 0 ] && echo "$TUNNELS_JSON" | grep -q "public_url"; then
+              break
+            fi
+            sleep 5
+          done
+
+          # Extract the VNC connection address (hostname and port)
+          VNC_ADDRESS=$(echo "$TUNNELS_JSON" | jq -r '.tunnels[] | select(.proto=="tcp") | .public_url' | sed 's/tcp:\/\///')
+          
+          if [ -z "$VNC_ADDRESS" ]; then
+            echo "Failed to get ngrok VNC address."
+            exit 1
+          fi
+
+          echo "VNC_ADDRESS=${VNC_ADDRESS}" >> $GITHUB_ENV
+
+
+      - name: Connection + Keep Alive
         run: |
           echo "=== FINAL CONNECTION INFO ==="
-          echo "1. Go to: https://remotedesktop.google.com/access"
-          echo "2. Connect using the PIN you provided."
+          echo "VNC Address (HOST:PORT): ${VNC_ADDRESS}"
+          echo "VNC Password (The value of 'PASSWORD' environment variable): ${PASSWORD}"
           echo
-          echo ">>> Keeping runner alive for connection."
+          echo ">>> Connect with any VNC client (e.g., RealVNC Viewer) using the address above."
+          echo ">>> Once connected, you can open a browser/terminal and install/authorize CRD."
+          
+          # Loop to keep the action running
           while true; do sleep 600; done
