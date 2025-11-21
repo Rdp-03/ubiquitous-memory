@@ -1,4 +1,4 @@
-name: setup KDE Plasma + CRD
+name: setup CRD (XFCE - Faster Install)
 
 on:
   workflow_dispatch:
@@ -24,31 +24,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Ensure runner user has sudo
+      - name: Setup User and Install XFCE + CRD
         run: |
+          echo ">>> Setting up user and installing XFCE + CRD..."
+          
+          # Set up user for sudo
           echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
 
-      - name: Install KDE Plasma + Chrome Remote Desktop
-        run: |
-          echo ">>> Installing KDE Plasma Desktop & CRD..."
+          # Update and install CRD dependencies + XFCE
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kde-plasma-desktop xorg dbus-x11 wget jq
-          
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xfce4 xfce4-terminal dbus-x11 wget jq
+
+          # 1. Download and install CRD
           CRD_DEB="chrome-remote-desktop_current_amd64.deb"
           wget https://dl.google.com/linux/direct/$CRD_DEB
           sudo dpkg --install $CRD_DEB || sudo apt install -f -y -qq
           
-          echo "exec /usr/bin/startplasma-x11" | sudo tee /etc/chrome-remote-desktop-session
+          # 2. Configure the session to use XFCE
+          echo "exec /usr/bin/xfce4-session" | sudo tee /etc/chrome-remote-desktop-session
           
+          # 3. Add the runner user to the CRD group
           sudo groupadd -f chrome-remote-desktop
           sudo usermod -aG chrome-remote-desktop ${USERNAME}
 
-      - name: Authorize and Start CRD Service (Two Inputs)
+      - name: Authorize and Start CRD Service
         run: |
           echo ">>> Starting Chrome Remote Desktop Service..."
           
-          # Manually construct the full command using the two separate inputs,
-          # including the necessary DISPLAY= and start-host components.
+          # Manually construct the full command using the two separate inputs.
+          # The start-host command is more reliable than the chrome-remote-desktop client.
           CRD_COMMAND="DISPLAY= /opt/google/chrome-remote-desktop/start-host \
                        --code=\"${{ inputs.crd_code }}\" \
                        --redirect-url=\"https://remotedesktop.google.com/_/oauthredirect\" \
@@ -66,8 +70,7 @@ jobs:
         run: |
           echo "=== FINAL CONNECTION INFO ==="
           echo "1. Go to: https://remotedesktop.google.com/access"
-          echo "2. Find the new desktop session linked to your Google Account."
-          echo "3. Connect using the 6-digit PIN you provided."
+          echo "2. Connect using the PIN you provided."
           echo
           echo ">>> Keeping runner alive for connection."
           while true; do sleep 600; done
