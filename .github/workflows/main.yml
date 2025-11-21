@@ -12,7 +12,7 @@ jobs:
     env:
       NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
       USERNAME: runner
-      # Note: VNC uses a separate password (vncpasswd) but we'll reuse the runner password for simplicity
+      # Note: VNC password will be this value
       PASSWORD: runner
       VNC_PORT: 5901
 
@@ -45,30 +45,44 @@ jobs:
           sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.vnc
 
           # 2. Set the VNC password (required by VNC server)
-          # We execute vncpasswd as the runner user using their PASSWORD environment variable
-          # The 'yes' command automates the input process, setting the password and skipping verification
-          echo "Setting VNC password for ${USERNAME}..."
-          sudo -u ${USERNAME} sh -c "mkdir -p /home/${USERNAME}/.vnc && echo '${PASSWORD}' | vncpasswd -f > /home/${USERNAME}/.vnc/passwd"
-          sudo -u ${USERNAME} chmod 600 /home/${USERNAME}/.vnc/passwd
+          # Use expect to automate password setting, making it more robust than echo|vncpasswd
+          sudo apt-get install expect -y -qq
+          
+          VNC_PASSWORD_SET_SCRIPT='
+          spawn vncpasswd
+          expect "Password:"
+          send -- "${PASSWORD}\r"
+          expect "Verify:"
+          send -- "${PASSWORD}\r"
+          expect "Would you like to enter a view-only password (y/n)?"
+          send -- "n\r"
+          expect eof
+          '
+          # Execute the expect script as the runner user
+          sudo -u ${USERNAME} sh -c "echo \"${VNC_PASSWORD_SET_SCRIPT}\" | expect"
           
           # 3. Start VNC Server
           echo "Starting VNC Server on port ${VNC_PORT}..."
           sudo -u ${USERNAME} tightvncserver -geometry 1280x800 :1
 
 
-      - name: Setup ngrok tunnel
+      - name: Setup ngrok tunnel (FIXED DOWNLOAD)
         run: |
           echo ">>> Setting up ngrok tunnel on VNC port ${VNC_PORT}..."
           
-          # Install ngrok
-          curl -s https://ngrok-agent.s3.amazonaws.com/ngrok.zip -o ngrok.zip
-          unzip ngrok.zip
+          # FIX: Use the stable ngrok installation via direct download and dpkg
+          wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
+          unzip -q ngrok-stable-linux-amd64.zip
           
+          # Make ngrok executable and move it to a PATH location
+          chmod +x ngrok
+          sudo mv ngrok /usr/local/bin/
+
           # Authenticate ngrok (NGROK_AUTHTOKEN must be in secrets)
-          ./ngrok authtoken "${NGROK_AUTHTOKEN}"
+          ngrok authtoken "${NGROK_AUTHTOKEN}"
           
           # Start ngrok tunnel in the background
-          ./ngrok tcp ${VNC_PORT} --log stdout --log-format json --region in &
+          ngrok tcp ${VNC_PORT} --log stdout --log-format json --region us &
 
           # Wait for ngrok to get the URL
           NGROK_API_URL="http://127.0.0.1:4040/api/tunnels"
@@ -95,10 +109,10 @@ jobs:
         run: |
           echo "=== FINAL CONNECTION INFO ==="
           echo "VNC Address (HOST:PORT): ${VNC_ADDRESS}"
-          echo "VNC Password (The value of 'PASSWORD' environment variable): ${PASSWORD}"
+          echo "VNC Password (The value of 'PASSWORD' env): ${PASSWORD}"
           echo
           echo ">>> Connect with any VNC client (e.g., RealVNC Viewer) using the address above."
-          echo ">>> Once connected, you can open a browser/terminal and install/authorize CRD."
+          echo ">>> Once connected to KDE Plasma, you can open a terminal and install/authorize CRD."
           
           # Loop to keep the action running
           while true; do sleep 600; done
