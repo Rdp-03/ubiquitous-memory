@@ -68,7 +68,7 @@ jobs:
           ./ngrok authtoken "${NGROK_AUTHTOKEN}"
           
           # Start ngrok tunnel in the background
-          ./ngrok tcp ${VNC_PORT} --log stdout --log-format json --region us &
+          ./ngrok tcp ${VNC_PORT} --log stdout --log-format json --region in &
 
           # Wait for ngrok to get the URL
           NGROK_API_URL="http://127.0.0.1:4040/api/tunnels"
