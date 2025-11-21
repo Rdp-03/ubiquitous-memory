@@ -45,21 +45,18 @@ jobs:
           sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.vnc
 
           # 2. Set the VNC password (required by VNC server)
-          # We use expect to automate password setting.
-          
-          VNC_PASSWORD_SET_SCRIPT='
-          spawn vncpasswd
-          expect "Password:"
-          send -- "${PASSWORD}\r"
-          expect "Verify:"
-          send -- "${PASSWORD}\r"
-          expect "Would you like to enter a view-only password (y/n)?"
-          send -- "n\r"
-          expect eof
-          '
-          # FIX: Use 'bash -c' to prevent "Syntax error: (" unexpected
           echo "Setting VNC password for ${USERNAME}..."
-          sudo -u ${USERNAME} bash -c "echo \"${VNC_PASSWORD_SET_SCRIPT}\" | expect"
+          # FIX: Use Heredoc to reliably execute the expect script as the runner user
+          sudo -u ${USERNAME} /usr/bin/expect << EOF
+spawn vncpasswd
+expect "Password:"
+send -- "${PASSWORD}\r"
+expect "Verify:"
+send -- "${PASSWORD}\r"
+expect "Would you like to enter a view-only password (y/n)?"
+send -- "n\r"
+expect eof
+EOF
           
           # 3. Start VNC Server
           echo "Starting VNC Server on port ${VNC_PORT}..."
