@@ -29,8 +29,8 @@ jobs:
         run: |
           echo ">>> Installing KDE Plasma Desktop & TightVNC Server..."
           sudo apt-get update -qq
-          # Install KDE, xorg, and TightVNC
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kde-plasma-desktop xorg dbus-x11 tightvncserver wget jq
+          # Install KDE, xorg, TightVNC, and expect
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq kde-plasma-desktop xorg dbus-x11 tightvncserver wget jq expect
 
           # 1. Configure VNC Startup Script for KDE Plasma
           mkdir -p /home/${USERNAME}/.vnc
@@ -45,8 +45,7 @@ jobs:
           sudo chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.vnc
 
           # 2. Set the VNC password (required by VNC server)
-          # Use expect to automate password setting, making it more robust than echo|vncpasswd
-          sudo apt-get install expect -y -qq
+          # We use expect to automate password setting.
           
           VNC_PASSWORD_SET_SCRIPT='
           spawn vncpasswd
@@ -58,19 +57,20 @@ jobs:
           send -- "n\r"
           expect eof
           '
-          # Execute the expect script as the runner user
-          sudo -u ${USERNAME} sh -c "echo \"${VNC_PASSWORD_SET_SCRIPT}\" | expect"
+          # FIX: Use 'bash -c' to prevent "Syntax error: (" unexpected
+          echo "Setting VNC password for ${USERNAME}..."
+          sudo -u ${USERNAME} bash -c "echo \"${VNC_PASSWORD_SET_SCRIPT}\" | expect"
           
           # 3. Start VNC Server
           echo "Starting VNC Server on port ${VNC_PORT}..."
           sudo -u ${USERNAME} tightvncserver -geometry 1280x800 :1
 
 
-      - name: Setup ngrok tunnel (FIXED DOWNLOAD)
+      - name: Setup ngrok tunnel
         run: |
           echo ">>> Setting up ngrok tunnel on VNC port ${VNC_PORT}..."
           
-          # FIX: Use the stable ngrok installation via direct download and dpkg
+          # Use the stable ngrok installation via direct download
           wget -q https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip
           unzip -q ngrok-stable-linux-amd64.zip
           
