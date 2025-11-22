@@ -1,0 +1,162 @@
+name: XFCE VNC Runner + ngrok v3 (India)
+
+on:
+  workflow_dispatch:
+    inputs:
+      resolution:
+        description: Display resolution (e.g., 1920x1080)
+        required: false
+        default: 1920x1080
+      color_depth:
+        description: Color depth (16/24/32)
+        required: false
+        default: 24
+      display:
+        description: X display number (1 => TCP 5901)
+        required: false
+        default: 1
+      region:
+        description: ngrok region (in, us, eu, ap, au, sa, jp)
+        required: false
+        default: in
+      vnc_password:
+        description: Optional VNC password; leave blank to auto-generate
+        required: false
+        default: ""
+      keep_alive_minutes:
+        description: Minutes to keep session alive (runner limits apply)
+        required: false
+        default: 300
+
+permissions:
+  contents: read
+
+jobs:
+  gui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      USERNAME: runner
+      RESOLUTION: ${{ github.event.inputs.resolution || '1920x1080' }}
+      COLOR_DEPTH: ${{ github.event.inputs.color_depth || '24' }}
+      DISPLAY_NUM: ${{ github.event.inputs.display || '1' }}
+      NGROK_REGION: ${{ github.event.inputs.region || 'in' }}
+      KEEP_MINUTES: ${{ github.event.inputs.keep_alive_minutes || '300' }}
+      VNC_PASSWORD: ${{ github.event.inputs.vnc_password }}
+      NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
+
+    steps:
+      - name: Validate inputs and env
+        run: |
+          set -e
+          if [ -z "${NGROK_AUTHTOKEN}" ]; then
+            echo "Missing NGROK_AUTH_TOKEN secret. Add it in: Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          if ! [[ "${RESOLUTION}" =~ ^[0-9]{3,5}x[0-9]{3,5}$ ]]; then
+            echo "Invalid resolution '${RESOLUTION}'. Use WxH, e.g., 1920x1080."
+            exit 1
+          fi
+          if ! [[ "${COLOR_DEPTH}" =~ ^(16|24|32)$ ]]; then
+            echo "Invalid color depth '${COLOR_DEPTH}'. Use 16, 24, or 32."
+            exit 1
+          fi
+          if ! [[ "${DISPLAY_NUM}" =~ ^[0-9]+$ ]]; then
+            echo "Invalid display number '${DISPLAY_NUM}'. Must be a number like 1."
+            exit 1
+          fi
+
+      - name: Install desktop and tools
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            xfce4 xfce4-goodies xorg dbus-x11 tigervnc-standalone-server tigervnc-common \
+            wget unzip curl jq
+
+      - name: Configure VNC for XFCE
+        run: |
+          set -e
+          mkdir -p "${HOME}/.vnc"
+
+          # Decide VNC password (generate if not provided)
+          if [ -z "${VNC_PASSWORD}" ]; then
+            VNC_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12)"
+            echo "Generated VNC password."
+          fi
+          echo "VNC_PASSWORD=${VNC_PASSWORD}" >> "$GITHUB_ENV"
+
+          # Securely write VNC password file
+          umask 077
+          echo "${VNC_PASSWORD}" | vncpasswd -f > "${HOME}/.vnc/passwd"
+
+          # Create xstartup script without heredoc to avoid YAML issues
+          XSTARTUP="${HOME}/.vnc/xstartup"
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'unset SESSION_MANAGER' \
+            'unset DBUS_SESSION_BUS_ADDRESS' \
+            'exec dbus-launch --exit-with-session startxfce4' \
+            > "${XSTARTUP}"
+          chmod +x "${XSTARTUP}"
+
+      - name: Start VNC server
+        run: |
+          set -e
+          vncserver -kill :${DISPLAY_NUM} >/dev/null 2>&1 || true
+          vncserver :${DISPLAY_NUM} -geometry "${RESOLUTION}" -depth "${COLOR_DEPTH}"
+          echo "VNC server started on display :${DISPLAY_NUM} (port $((5900 + DISPLAY_NUM)))."
+
+      - name: Install ngrok v3
+        run: |
+          set -e
+          NGROK_ZIP="ngrok-v3-stable-linux-amd64.zip"
+          wget -q -O "${NGROK_ZIP}" "https://bin.equinox.io/c/bNyj1mQVY4c/${NGROK_ZIP}"
+          unzip -qq -o "${NGROK_ZIP}"
+          sudo install -m 0755 ngrok /usr/local/bin/ngrok
+          ngrok version
+          ngrok config add-authtoken "${NGROK_AUTHTOKEN}"
+
+      - name: Start ngrok TCP tunnel
+        id: ngrok
+        run: |
+          set -e
+          PORT=$((5900 + DISPLAY_NUM))
+          ngrok tcp ${PORT} --region="${NGROK_REGION}" --log=stdout > ngrok.log 2>&1 &
+          echo "Waiting for ngrok to be ready..."
+          for i in $(seq 1 60); do
+            URL=$(curl -sS http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[]?.public_url' | grep -E '^tcp://' || true)
+            if [ -n "${URL}" ]; then
+              echo "NGROK_URL=${URL}" >> "$GITHUB_OUTPUT"
+              echo "Found tunnel: ${URL}"
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "${URL}" ]; then
+            echo "Failed to obtain ngrok URL. Dumping logs:"
+            sed -n '1,200p' ngrok.log || true
+            exit 1
+          fi
+
+      - name: Show connection info
+        run: |
+          echo "==============================================="
+          echo "XFCE + VNC is ready!"
+          echo "Display: :${DISPLAY_NUM}"
+          echo "Resolution: ${RESOLUTION}  Depth: ${COLOR_DEPTH}"
+          echo "VNC Password: ${VNC_PASSWORD}"
+          echo "Connect using your VNC client to:"
+          echo "${{ steps.ngrok.outputs.NGROK_URL }}"
+          echo "Tip: In many VNC clients, enter host:port from the URL."
+          echo "Region: ${NGROK_REGION}"
+          echo "==============================================="
+
+      - name: Keep session alive
+        run: |
+          MIN=${KEEP_MINUTES:-300}
+          echo "Keeping session alive for ${MIN} minutes..."
+          SECONDS=$(( MIN * 60 ))
+          end=$(( $(date +%s) + SECONDS ))
+          while [ $(date +%s) -lt $end ]; do
+            sleep 15
+          done
